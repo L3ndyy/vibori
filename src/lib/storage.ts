@@ -53,12 +53,13 @@ function saveLocalState() {
 }
 
 function getDatabaseClient() {
-  const connectionString =
+  const rawUrl =
     process.env.DATABASE_URL ||
     process.env.POSTGRES_URL ||
     process.env.POSTGRES_PRISMA_URL;
-  if (connectionString) {
-    return neon(connectionString);
+  if (rawUrl) {
+    const cleanUrl = rawUrl.trim().replace(/^"|"$/g, "");
+    return neon(cleanUrl);
   }
   return null;
 }

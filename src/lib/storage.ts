@@ -61,6 +61,7 @@ function getDatabaseClient() {
     const cleanUrl = rawUrl.trim().replace(/^"|"$/g, "");
     return neon(cleanUrl);
   }
+  console.warn("⚠️ getDatabaseClient: NO DATABASE_URL found in environment! Available keys:", Object.keys(process.env).filter(k => k.includes("POSTGRES") || k.includes("DATABASE") || k.includes("NEON")));
   return null;
 }
 

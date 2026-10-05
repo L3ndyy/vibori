@@ -116,12 +116,10 @@ export default function Home() {
         setIsClosed(data.state.isClosed);
         setVotersCount(data.state.votersCount || 0);
       }
-      if (data.hasUserVoted !== undefined) {
-        setHasVoted(data.hasUserVoted);
-      }
-      if (data.userVote) {
-        setUserVoteCandidateId(data.userVote);
-      }
+      const userHasVoted = Boolean(data.hasUserVoted);
+      setHasVoted(userHasVoted);
+      setUserVoteCandidateId(userHasVoted ? data.userVote || null : null);
+
       if (data.votedStudents) {
         setVotedStudents(data.votedStudents);
       }

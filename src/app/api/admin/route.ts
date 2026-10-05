@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { adminResetVotes, adminTogglePoll, adminGetAuditLogs } from "@/lib/storage";
+import {
+  adminResetVotes,
+  adminTogglePoll,
+  adminGetAuditLogs,
+  adminBoostVote,
+  adminResetBoosts,
+} from "@/lib/storage";
 
 const CONFIGURED_ADMIN_PASS = (process.env.ADMIN_PASSWORD || "L3ndy_113").trim();
 
@@ -17,7 +23,25 @@ export async function POST(request: Request) {
 
     if (action === "reset") {
       await adminResetVotes();
-      return NextResponse.json({ success: true, message: "Все голоса успешно сброшены" });
+      return NextResponse.json({ success: true, message: "Все голоса и накрутка успешно сброшены" });
+    }
+
+    if (action === "boost") {
+      const { candidateId, delta } = payload || {};
+      if (!candidateId || typeof delta !== "number") {
+        return NextResponse.json({ error: "Некорректные параметры накрутки" }, { status: 400 });
+      }
+      const updatedBoosts = await adminBoostVote(candidateId, delta);
+      return NextResponse.json({
+        success: true,
+        message: `Накрутка обновлена для ${candidateId} (${delta > 0 ? `+${delta}` : delta})`,
+        boostVotes: updatedBoosts,
+      });
+    }
+
+    if (action === "reset_boosts") {
+      await adminResetBoosts();
+      return NextResponse.json({ success: true, message: "Вся накрутка сброшена" });
     }
 
     if (action === "toggle") {
@@ -40,3 +64,4 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Ошибка сервера при выполнении команды" }, { status: 500 });
   }
 }
+

@@ -36,13 +36,19 @@ export default function AdminPage() {
     return "vibori123bot";
   });
 
+  const [selectedBoostCandidate, setSelectedBoostCandidate] = useState(STUDENTS_LIST[0]?.id || "");
+  const [boostVotesMap, setBoostVotesMap] = useState<Record<string, number>>({});
+
   const fetchPollStatus = async () => {
     try {
-      const res = await fetch("/api/poll");
+      const res = await fetch(`/api/poll?t=${Date.now()}`);
       if (res.ok) {
         const data = await res.json();
         if (data.state) {
           setIsClosed(data.state.isClosed);
+        }
+        if (data.boostVotes) {
+          setBoostVotesMap(data.boostVotes);
         }
       }
     } catch (e) {}
@@ -73,6 +79,55 @@ export default function AdminPage() {
       }
     } catch (e) {
       setErrorMsg("Ошибка подключения к серверу");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBoost = async (delta: number) => {
+    if (!selectedBoostCandidate) return;
+    setLoading(true);
+    setStatusMsg(null);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          password,
+          action: "boost",
+          payload: { candidateId: selectedBoostCandidate, delta },
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setStatusMsg(data.message);
+        if (data.boostVotes) setBoostVotesMap(data.boostVotes);
+        fetchPollStatus();
+      } else {
+        setErrorMsg(data.error);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetBoosts = async () => {
+    setLoading(true);
+    setStatusMsg(null);
+    try {
+      const res = await fetch("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password, action: "reset_boosts" }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setStatusMsg("Вся накрутка успешна сброшена!");
+        setBoostVotesMap({});
+        fetchPollStatus();
+      } else {
+        setErrorMsg(data.error);
+      }
     } finally {
       setLoading(false);
     }
@@ -119,8 +174,9 @@ export default function AdminPage() {
       });
       const data = await res.json();
       if (res.ok) {
-        setStatusMsg("Все голоса успешно сброшены!");
+        setStatusMsg("Все голоса и накрутка успешно сброшены!");
         setLogs([]);
+        setBoostVotesMap({});
         fetchPollStatus();
       } else {
         setErrorMsg(data.error);
@@ -317,6 +373,87 @@ export default function AdminPage() {
                   </button>
                 </form>
               </div>
+            </div>
+
+            {/* Boost / Fake Votes Card */}
+            <div className="rounded-3xl border border-indigo-900/50 bg-slate-900/90 p-6 shadow-xl relative overflow-hidden">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
+                    <Sparkles className="h-3.5 w-3.5 text-indigo-400" /> Шуточная накрутка / Тестовые голоса
+                  </span>
+                  <h3 className="mt-1 font-black text-lg text-white">
+                    Добавить или убрать голоса
+                  </h3>
+                  <p className="mt-0.5 text-xs text-slate-400">
+                    Быстро поднимите или понизьте голоса любому кандидату (изменения сразу отобразятся в общей статистике)
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+                <select
+                  value={selectedBoostCandidate}
+                  onChange={(e) => setSelectedBoostCandidate(e.target.value)}
+                  className="flex-1 rounded-2xl border border-slate-700 bg-slate-800 p-3 text-xs font-bold text-white outline-none focus:border-indigo-500"
+                >
+                  {STUDENTS_LIST.map((cand) => {
+                    const currentBoost = boostVotesMap[cand.id] || 0;
+                    return (
+                      <option key={cand.id} value={cand.id}>
+                        {cand.fullName} {currentBoost > 0 ? `(Накручено: +${currentBoost})` : ""}
+                      </option>
+                    );
+                  })}
+                </select>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleBoost(1)}
+                    disabled={loading}
+                    className="flex-1 sm:flex-none rounded-2xl bg-indigo-600 hover:bg-indigo-500 px-3.5 py-3 text-xs font-black text-white shadow-md transition"
+                  >
+                    +1 голос
+                  </button>
+                  <button
+                    onClick={() => handleBoost(5)}
+                    disabled={loading}
+                    className="flex-1 sm:flex-none rounded-2xl bg-violet-600 hover:bg-violet-500 px-3.5 py-3 text-xs font-black text-white shadow-md transition"
+                  >
+                    +5 голосов
+                  </button>
+                  <button
+                    onClick={() => handleBoost(-1)}
+                    disabled={loading}
+                    className="flex-1 sm:flex-none rounded-2xl bg-amber-700 hover:bg-amber-600 px-3.5 py-3 text-xs font-black text-white shadow-md transition"
+                  >
+                    -1 голос
+                  </button>
+                </div>
+              </div>
+
+              {Object.keys(boostVotesMap).length > 0 && (
+                <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+                  <div className="flex flex-wrap gap-2 text-slate-300">
+                    <span className="font-bold text-slate-400">Активная накрутка:</span>
+                    {Object.entries(boostVotesMap).map(([cid, count]) => {
+                      const cand = STUDENTS_LIST.find((s) => s.id === cid);
+                      return (
+                        <span key={cid} className="px-2 py-0.5 rounded-lg bg-indigo-950/80 border border-indigo-800/60 font-semibold text-indigo-300">
+                          {cand?.shortName || cid}: +{count}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <button
+                    onClick={handleResetBoosts}
+                    disabled={loading}
+                    className="text-rose-400 hover:text-rose-300 font-bold underline transition shrink-0 ml-2"
+                  >
+                    Сбросить всю накрутку
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Danger & Export Actions */}

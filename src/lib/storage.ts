@@ -26,6 +26,7 @@ export interface PollState {
 interface LocalDbSchema {
   voters: Record<string, VoterRecord>;
   votes: Record<string, number>;
+  boostVotes: Record<string, number>;
   isClosed: boolean;
   secretBallot: boolean;
 }
@@ -35,6 +36,7 @@ const LOCAL_FILE_PATH = path.join(process.cwd(), ".votes_cache.json");
 let memoryState: LocalDbSchema = {
   voters: {},
   votes: Object.fromEntries(STUDENTS_LIST.map((s) => [s.id, 0])),
+  boostVotes: {},
   isClosed: false,
   secretBallot: true,
 };
@@ -42,7 +44,7 @@ let memoryState: LocalDbSchema = {
 try {
   if (fs.existsSync(LOCAL_FILE_PATH)) {
     const raw = fs.readFileSync(LOCAL_FILE_PATH, "utf-8");
-    memoryState = JSON.parse(raw);
+    memoryState = { boostVotes: {}, ...JSON.parse(raw) };
   }
 } catch (e) {}
 
@@ -59,10 +61,9 @@ function getDatabaseClient() {
     process.env.POSTGRES_PRISMA_URL;
   if (rawUrl) {
     const cleanUrl = rawUrl.trim().replace(/^"|"$/g, "");
-    console.log(`[DB] Connected with URL prefix: ${cleanUrl.slice(0, 35)}... host: ${cleanUrl.split('@')[1]?.split('/')[0]}`);
     return neon(cleanUrl);
   }
-  console.warn("⚠️ getDatabaseClient: NO DATABASE_URL found in environment! Available keys:", Object.keys(process.env).filter(k => k.includes("POSTGRES") || k.includes("DATABASE") || k.includes("NEON")));
+  console.warn("⚠️ getDatabaseClient: NO DATABASE_URL found in environment!");
   return null;
 }
 
@@ -100,6 +101,7 @@ export async function getPollState(voterId?: string): Promise<{
   hasUserVoted: boolean;
   userVote?: string | null;
   votedStudents: string[];
+  boostVotes?: Record<string, number>;
 }> {
   const sql = getDatabaseClient();
 
@@ -118,9 +120,23 @@ export async function getPollState(voterId?: string): Promise<{
       `;
       const settingsRows = await sql`SELECT key, value FROM votes_settings`;
 
+      let isClosed = false;
+      let secretBallot = true;
+      let boostVotes: Record<string, number> = {};
+
+      for (const s of settingsRows) {
+        if (s.key === "isClosed") isClosed = s.value === "true";
+        if (s.key === "secretBallot") secretBallot = s.value !== "false";
+        if (s.key === "boost_votes") {
+          try {
+            boostVotes = JSON.parse(s.value);
+          } catch (e) {}
+        }
+      }
+
       const votes: Record<string, number> = {};
       for (const student of STUDENTS_LIST) {
-        votes[student.id] = 0;
+        votes[student.id] = Number(boostVotes[student.id] || 0);
       }
 
       let userVote: string | null = null;
@@ -150,27 +166,23 @@ export async function getPollState(voterId?: string): Promise<{
         }
       }
 
-      let isClosed = false;
-      let secretBallot = true;
-
-      for (const s of settingsRows) {
-        if (s.key === "isClosed") isClosed = s.value === "true";
-        if (s.key === "secretBallot") secretBallot = s.value !== "false";
+      let totalBoostCount = 0;
+      for (const bCount of Object.values(boostVotes)) {
+        totalBoostCount += Number(bCount || 0);
       }
-
-      console.log(`[DB] getPollState successfully computed: ${votersRows.length} voters, hasUserVoted=${hasUserVoted}`);
 
       return {
         state: {
           isClosed,
           secretBallot,
           votes,
-          votersCount: votersRows.length,
+          votersCount: votersRows.length + totalBoostCount,
           totalStudents: STUDENTS_LIST.length,
         },
         hasUserVoted,
         userVote,
         votedStudents,
+        boostVotes,
       };
     } catch (e) {
       console.error("Database query failed, falling back to local memory:", e);
@@ -178,9 +190,15 @@ export async function getPollState(voterId?: string): Promise<{
   }
 
   // Memory fallback
+  const boostVotes = memoryState.boostVotes || {};
   const votes: Record<string, number> = {};
+  let totalBoostCount = 0;
+
   for (const student of STUDENTS_LIST) {
-    votes[student.id] = Number(memoryState.votes[student.id] || 0);
+    const boost = Number(boostVotes[student.id] || 0);
+    const real = Number(memoryState.votes[student.id] || 0);
+    votes[student.id] = real + boost;
+    totalBoostCount += boost;
   }
 
   const userRecord = voterId ? memoryState.voters[voterId] : undefined;
@@ -193,12 +211,13 @@ export async function getPollState(voterId?: string): Promise<{
       isClosed: memoryState.isClosed,
       secretBallot: memoryState.secretBallot,
       votes,
-      votersCount: Object.keys(memoryState.voters).length,
+      votersCount: Object.keys(memoryState.voters).length + totalBoostCount,
       totalStudents: STUDENTS_LIST.length,
     },
     hasUserVoted: Boolean(userRecord),
     userVote: userRecord?.candidateId || null,
     votedStudents,
+    boostVotes,
   };
 }
 
@@ -313,6 +332,11 @@ export async function adminResetVotes(): Promise<void> {
     try {
       await ensureTable(sql);
       await sql`DELETE FROM votes_voters`;
+      await sql`
+        INSERT INTO votes_settings (key, value)
+        VALUES ('boost_votes', '{}')
+        ON CONFLICT (key) DO UPDATE SET value = '{}'
+      `;
       return;
     } catch (e) {
       console.error("DB reset failed:", e);
@@ -320,9 +344,74 @@ export async function adminResetVotes(): Promise<void> {
   }
 
   memoryState.voters = {};
+  memoryState.boostVotes = {};
   for (const s of STUDENTS_LIST) {
     memoryState.votes[s.id] = 0;
   }
+  saveLocalState();
+}
+
+export async function adminBoostVote(candidateId: string, delta: number): Promise<Record<string, number>> {
+  const sql = getDatabaseClient();
+  let boostVotes: Record<string, number> = {};
+
+  if (sql) {
+    try {
+      await ensureTable(sql);
+      const rows = await sql`SELECT value FROM votes_settings WHERE key = 'boost_votes' LIMIT 1`;
+      if (rows.length > 0) {
+        try {
+          boostVotes = JSON.parse(rows[0].value);
+        } catch (e) {}
+      }
+      const current = Number(boostVotes[candidateId] || 0);
+      const updated = Math.max(0, current + delta);
+      if (updated === 0) {
+        delete boostVotes[candidateId];
+      } else {
+        boostVotes[candidateId] = updated;
+      }
+
+      await sql`
+        INSERT INTO votes_settings (key, value)
+        VALUES ('boost_votes', ${JSON.stringify(boostVotes)})
+        ON CONFLICT (key) DO UPDATE SET value = ${JSON.stringify(boostVotes)}
+      `;
+      return boostVotes;
+    } catch (e) {
+      console.error("DB boost vote failed:", e);
+    }
+  }
+
+  if (!memoryState.boostVotes) memoryState.boostVotes = {};
+  const current = Number(memoryState.boostVotes[candidateId] || 0);
+  const updated = Math.max(0, current + delta);
+  if (updated === 0) {
+    delete memoryState.boostVotes[candidateId];
+  } else {
+    memoryState.boostVotes[candidateId] = updated;
+  }
+  saveLocalState();
+  return memoryState.boostVotes;
+}
+
+export async function adminResetBoosts(): Promise<void> {
+  const sql = getDatabaseClient();
+  if (sql) {
+    try {
+      await ensureTable(sql);
+      await sql`
+        INSERT INTO votes_settings (key, value)
+        VALUES ('boost_votes', '{}')
+        ON CONFLICT (key) DO UPDATE SET value = '{}'
+      `;
+      return;
+    } catch (e) {
+      console.error("DB reset boosts failed:", e);
+    }
+  }
+
+  memoryState.boostVotes = {};
   saveLocalState();
 }
 
@@ -375,3 +464,4 @@ export async function adminGetAuditLogs(): Promise<VoterRecord[]> {
     (a, b) => new Date(b.votedAt).getTime() - new Date(a.votedAt).getTime()
   );
 }
+

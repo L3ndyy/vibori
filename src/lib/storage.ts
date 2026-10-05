@@ -1,4 +1,4 @@
-import { Redis } from "@upstash/redis";
+import { neon } from "@neondatabase/serverless";
 import fs from "fs";
 import path from "path";
 import { STUDENTS_LIST } from "@/data/students";
@@ -16,13 +16,13 @@ export interface VoterRecord {
 
 export interface PollState {
   isClosed: boolean;
-  secretBallot: boolean; // if true, don't reveal who voted for whom publicly, only totals and turnout list
+  secretBallot: boolean;
   votes: Record<string, number>; // candidateId -> count
   votersCount: number;
   totalStudents: number;
 }
 
-// In-memory fallback for local dev or when Redis is not yet configured
+// In-memory fallback
 interface LocalDbSchema {
   voters: Record<string, VoterRecord>;
   votes: Record<string, number>;
@@ -39,99 +39,126 @@ let memoryState: LocalDbSchema = {
   secretBallot: true,
 };
 
-// Try loading local file if it exists
 try {
   if (fs.existsSync(LOCAL_FILE_PATH)) {
     const raw = fs.readFileSync(LOCAL_FILE_PATH, "utf-8");
     memoryState = JSON.parse(raw);
   }
-} catch (e) {
-  // Ignore filesystem errors in serverless
-}
+} catch (e) {}
 
 function saveLocalState() {
   try {
     fs.writeFileSync(LOCAL_FILE_PATH, JSON.stringify(memoryState, null, 2), "utf-8");
-  } catch (e) {
-    // Ignore on read-only serverless filesystems
-  }
+  } catch (e) {}
 }
 
-// Check if Upstash Redis credentials are provided
-function getRedisClient(): Redis | null {
-  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
-
-  if (url && token) {
-    return new Redis({ url, token });
+function getDatabaseClient() {
+  const connectionString =
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    process.env.POSTGRES_PRISMA_URL;
+  if (connectionString) {
+    return neon(connectionString);
   }
   return null;
 }
 
-const KEY_VOTERS = "starosta:voters";
-const KEY_VOTES = "starosta:votes";
-const KEY_SETTINGS = "starosta:settings";
+let tableInitialized = false;
+
+async function ensureTable(sql: any) {
+  if (tableInitialized) return;
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS votes_voters (
+        voter_id VARCHAR(255) PRIMARY KEY,
+        username VARCHAR(255),
+        first_name VARCHAR(255),
+        last_name VARCHAR(255),
+        student_name VARCHAR(255),
+        device_id VARCHAR(255),
+        candidate_id VARCHAR(255) NOT NULL,
+        voted_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS votes_settings (
+        key VARCHAR(50) PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `;
+    tableInitialized = true;
+  } catch (e) {
+    console.error("Failed to initialize database tables:", e);
+  }
+}
 
 export async function getPollState(voterId?: string): Promise<{
   state: PollState;
   hasUserVoted: boolean;
   userVote?: string | null;
-  votedStudents: string[]; // names of people who participated
+  votedStudents: string[];
 }> {
-  const redis = getRedisClient();
+  const sql = getDatabaseClient();
 
-  if (redis) {
-    const [votesHash, settings, voterData, allVoters] = await Promise.all([
-      redis.hgetall<Record<string, number>>(KEY_VOTES),
-      redis.hgetall<{ isClosed?: string; secretBallot?: string }>(KEY_SETTINGS),
-      voterId ? redis.hget<VoterRecord>(KEY_VOTERS, voterId) : null,
-      redis.hgetall<Record<string, VoterRecord | string>>(KEY_VOTERS),
-    ]);
+  if (sql) {
+    try {
+      await ensureTable(sql);
 
-    const votes: Record<string, number> = {};
-    for (const student of STUDENTS_LIST) {
-      votes[student.id] = Number(votesHash?.[student.id] || 0);
-    }
+      const [votersRows, settingsRows, userRow] = await Promise.all([
+        sql`SELECT voter_id, username, first_name, student_name, candidate_id FROM votes_voters`,
+        sql`SELECT key, value FROM votes_settings`,
+        voterId ? sql`SELECT candidate_id FROM votes_voters WHERE voter_id = ${voterId} LIMIT 1` : Promise.resolve([]),
+      ]);
 
-    const isClosed = settings?.isClosed === "true";
-    const secretBallot = settings?.secretBallot !== "false"; // default true
-
-    const votedList: string[] = [];
-    if (allVoters) {
-      for (const val of Object.values(allVoters)) {
-        try {
-          const rec: VoterRecord = typeof val === "string" ? JSON.parse(val) : val;
-          if (rec.studentName) votedList.push(rec.studentName);
-          else if (rec.username) votedList.push(`@${rec.username}`);
-          else if (rec.firstName) votedList.push(rec.firstName);
-        } catch {
-          // ignore parsing error
-        }
+      const votes: Record<string, number> = {};
+      for (const student of STUDENTS_LIST) {
+        votes[student.id] = 0;
       }
-    }
 
-    return {
-      state: {
-        isClosed,
-        secretBallot,
-        votes,
-        votersCount: allVoters ? Object.keys(allVoters).length : 0,
-        totalStudents: STUDENTS_LIST.length,
-      },
-      hasUserVoted: Boolean(voterData),
-      userVote: voterData ? (typeof voterData === "string" ? JSON.parse(voterData).candidateId : voterData.candidateId) : null,
-      votedStudents: votedList,
-    };
+      const votedStudents: string[] = [];
+      for (const row of votersRows) {
+        if (votes[row.candidate_id] !== undefined) {
+          votes[row.candidate_id] += 1;
+        } else {
+          votes[row.candidate_id] = 1;
+        }
+        if (row.student_name) votedStudents.push(row.student_name);
+        else if (row.username) votedStudents.push(`@${row.username}`);
+        else if (row.first_name) votedStudents.push(row.first_name);
+      }
+
+      let isClosed = false;
+      let secretBallot = true;
+
+      for (const s of settingsRows) {
+        if (s.key === "isClosed") isClosed = s.value === "true";
+        if (s.key === "secretBallot") secretBallot = s.value !== "false";
+      }
+
+      return {
+        state: {
+          isClosed,
+          secretBallot,
+          votes,
+          votersCount: votersRows.length,
+          totalStudents: STUDENTS_LIST.length,
+        },
+        hasUserVoted: userRow.length > 0,
+        userVote: userRow.length > 0 ? userRow[0].candidate_id : null,
+        votedStudents,
+      };
+    } catch (e) {
+      console.error("Database query failed, falling back to local memory:", e);
+    }
   }
 
-  // Fallback to local memory / JSON
+  // Memory fallback
   const votes: Record<string, number> = {};
   for (const student of STUDENTS_LIST) {
     votes[student.id] = Number(memoryState.votes[student.id] || 0);
   }
 
   const userRecord = voterId ? memoryState.voters[voterId] : undefined;
-
   const votedStudents = Object.values(memoryState.voters).map(
     (v) => v.studentName || (v.username ? `@${v.username}` : v.firstName || "Студент")
   );
@@ -151,50 +178,75 @@ export async function getPollState(voterId?: string): Promise<{
 }
 
 export async function castVote(record: VoterRecord): Promise<{ success: boolean; error?: string }> {
-  const redis = getRedisClient();
+  const sql = getDatabaseClient();
 
-  if (redis) {
-    const settings = await redis.hgetall<{ isClosed?: string }>(KEY_SETTINGS);
-    if (settings?.isClosed === "true") {
-      return { success: false, error: "Голосование уже завершено!" };
-    }
+  if (sql) {
+    try {
+      await ensureTable(sql);
 
-    // Check if this voter already voted
-    const existing = await redis.hexists(KEY_VOTERS, record.voterId);
-    if (existing) {
-      return { success: false, error: "Вы уже проголосовали! Повторное голосование запрещено." };
-    }
+      // Check settings (isClosed)
+      const settings = await sql`SELECT value FROM votes_settings WHERE key = 'isClosed' LIMIT 1`;
+      if (settings.length > 0 && settings[0].value === "true") {
+        return { success: false, error: "Голосование уже завершено!" };
+      }
 
-    // Also check if the studentName was already used (if provided)
-    // Also check if the studentName or deviceId was already used
-    if (record.studentName || record.deviceId) {
-      const allVoters = await redis.hgetall<Record<string, VoterRecord | string>>(KEY_VOTERS);
-      if (allVoters) {
-        for (const val of Object.values(allVoters)) {
-          const rec: VoterRecord = typeof val === "string" ? JSON.parse(val) : val;
-          if (record.studentName && rec.studentName && rec.studentName.toLowerCase() === record.studentName.toLowerCase()) {
-            return {
-              success: false,
-              error: `Голос от имени «${record.studentName}» уже был зарегистрирован!`,
-            };
-          }
-          if (record.deviceId && rec.deviceId && rec.deviceId === record.deviceId) {
-            return {
-              success: false,
-              error: "С вашего устройства (браузера) уже был отдан голос! Повторное голосование запрещено.",
-            };
-          }
+      // Check if voter already voted
+      const existingVoter = await sql`SELECT voter_id FROM votes_voters WHERE voter_id = ${record.voterId} LIMIT 1`;
+      if (existingVoter.length > 0) {
+        return { success: false, error: "Вы уже проголосовали! Повторное голосование запрещено." };
+      }
+
+      // Check studentName duplicate
+      if (record.studentName) {
+        const existingStudent = await sql`
+          SELECT student_name FROM votes_voters 
+          WHERE LOWER(student_name) = LOWER(${record.studentName}) 
+          LIMIT 1
+        `;
+        if (existingStudent.length > 0) {
+          return {
+            success: false,
+            error: `Голос от имени «${record.studentName}» уже был зарегистрирован!`,
+          };
         }
       }
+
+      // Check device duplicate
+      if (record.deviceId) {
+        const existingDevice = await sql`
+          SELECT device_id FROM votes_voters 
+          WHERE device_id = ${record.deviceId} 
+          LIMIT 1
+        `;
+        if (existingDevice.length > 0) {
+          return {
+            success: false,
+            error: "С вашего устройства (браузера) уже был отдан голос! Повторное голосование запрещено.",
+          };
+        }
+      }
+
+      // Insert record
+      await sql`
+        INSERT INTO votes_voters (
+          voter_id, username, first_name, last_name, student_name, device_id, candidate_id, voted_at
+        ) VALUES (
+          ${record.voterId},
+          ${record.username || null},
+          ${record.firstName || null},
+          ${record.lastName || null},
+          ${record.studentName || null},
+          ${record.deviceId || null},
+          ${record.candidateId},
+          ${record.votedAt}
+        )
+      `;
+
+      return { success: true };
+    } catch (e: any) {
+      console.error("Database insert error:", e);
+      return { success: false, error: "Ошибка базы данных при сохранении голоса." };
     }
-
-    // Atomic transaction / pipeline
-    const pipeline = redis.pipeline();
-    pipeline.hset(KEY_VOTERS, { [record.voterId]: JSON.stringify(record) });
-    pipeline.hincrby(KEY_VOTES, record.candidateId, 1);
-    await pipeline.exec();
-
-    return { success: true };
   }
 
   // Local fallback
@@ -231,36 +283,70 @@ export async function castVote(record: VoterRecord): Promise<{ success: boolean;
 }
 
 export async function adminResetVotes(): Promise<void> {
-  const redis = getRedisClient();
-  if (redis) {
-    await redis.del(KEY_VOTERS);
-    await redis.del(KEY_VOTES);
-    await redis.del(KEY_SETTINGS);
+  const sql = getDatabaseClient();
+  if (sql) {
+    try {
+      await ensureTable(sql);
+      await sql`DELETE FROM votes_voters`;
+      return;
+    } catch (e) {
+      console.error("DB reset failed:", e);
+    }
   }
-  memoryState = {
-    voters: {},
-    votes: Object.fromEntries(STUDENTS_LIST.map((s) => [s.id, 0])),
-    isClosed: false,
-    secretBallot: true,
-  };
+
+  memoryState.voters = {};
+  for (const s of STUDENTS_LIST) {
+    memoryState.votes[s.id] = 0;
+  }
   saveLocalState();
 }
 
 export async function adminTogglePoll(closed: boolean): Promise<void> {
-  const redis = getRedisClient();
-  if (redis) {
-    await redis.hset(KEY_SETTINGS, { isClosed: closed ? "true" : "false" });
+  const sql = getDatabaseClient();
+  if (sql) {
+    try {
+      await ensureTable(sql);
+      await sql`
+        INSERT INTO votes_settings (key, value)
+        VALUES ('isClosed', ${String(closed)})
+        ON CONFLICT (key) DO UPDATE SET value = ${String(closed)}
+      `;
+      return;
+    } catch (e) {
+      console.error("DB toggle failed:", e);
+    }
   }
+
   memoryState.isClosed = closed;
   saveLocalState();
 }
 
 export async function adminGetAuditLogs(): Promise<VoterRecord[]> {
-  const redis = getRedisClient();
-  if (redis) {
-    const all = await redis.hgetall<Record<string, VoterRecord | string>>(KEY_VOTERS);
-    if (!all) return [];
-    return Object.values(all).map((val) => (typeof val === "string" ? JSON.parse(val) : val));
+  const sql = getDatabaseClient();
+  if (sql) {
+    try {
+      await ensureTable(sql);
+      const rows = await sql`
+        SELECT voter_id, username, first_name, last_name, student_name, device_id, candidate_id, voted_at
+        FROM votes_voters
+        ORDER BY voted_at DESC
+      `;
+      return rows.map((r) => ({
+        voterId: r.voter_id,
+        username: r.username || undefined,
+        firstName: r.first_name || undefined,
+        lastName: r.last_name || undefined,
+        studentName: r.student_name || undefined,
+        deviceId: r.device_id || undefined,
+        candidateId: r.candidate_id,
+        votedAt: r.voted_at,
+      }));
+    } catch (e) {
+      console.error("DB audit logs failed:", e);
+    }
   }
-  return Object.values(memoryState.voters);
+
+  return Object.values(memoryState.voters).sort(
+    (a, b) => new Date(b.votedAt).getTime() - new Date(a.votedAt).getTime()
+  );
 }

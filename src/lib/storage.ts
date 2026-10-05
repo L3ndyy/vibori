@@ -111,36 +111,43 @@ export async function getPollState(voterId?: string): Promise<{
       const tgPrefixed = rawVoterId.startsWith("tg_") ? rawVoterId : `tg_${rawVoterId}`;
       const numericId = rawVoterId.replace(/^tg_/, "");
 
-      const votersRows = await sql`SELECT voter_id, username, first_name, student_name, candidate_id FROM votes_voters`;
+      const votersRows = await sql`
+        SELECT voter_id, username, first_name, last_name, student_name, device_id, candidate_id, voted_at
+        FROM votes_voters
+        ORDER BY voted_at DESC
+      `;
       const settingsRows = await sql`SELECT key, value FROM votes_settings`;
-      const userRow = rawVoterId
-        ? await sql`
-            SELECT candidate_id FROM votes_voters 
-            WHERE voter_id = ${rawVoterId} 
-               OR voter_id = ${tgPrefixed} 
-               OR voter_id = ${numericId}
-               OR username = ${rawVoterId.replace(/^@/, "")}
-            LIMIT 1
-          `
-        : [];
-
-      console.log(`[DB] getPollState successfully queried DB: found ${votersRows.length} voters`);
 
       const votes: Record<string, number> = {};
       for (const student of STUDENTS_LIST) {
         votes[student.id] = 0;
       }
 
+      let userVote: string | null = null;
+      let hasUserVoted = false;
       const votedStudents: string[] = [];
+
       for (const row of votersRows) {
         if (votes[row.candidate_id] !== undefined) {
           votes[row.candidate_id] += 1;
         } else {
           votes[row.candidate_id] = 1;
         }
+
         if (row.student_name) votedStudents.push(row.student_name);
         else if (row.username) votedStudents.push(`@${row.username}`);
         else if (row.first_name) votedStudents.push(row.first_name);
+
+        if (
+          rawVoterId &&
+          (row.voter_id === rawVoterId ||
+            row.voter_id === tgPrefixed ||
+            row.voter_id === numericId ||
+            (row.username && row.username.toLowerCase() === rawVoterId.replace(/^@/, "").toLowerCase()))
+        ) {
+          hasUserVoted = true;
+          userVote = row.candidate_id;
+        }
       }
 
       let isClosed = false;
@@ -151,6 +158,8 @@ export async function getPollState(voterId?: string): Promise<{
         if (s.key === "secretBallot") secretBallot = s.value !== "false";
       }
 
+      console.log(`[DB] getPollState successfully computed: ${votersRows.length} voters, hasUserVoted=${hasUserVoted}`);
+
       return {
         state: {
           isClosed,
@@ -159,8 +168,8 @@ export async function getPollState(voterId?: string): Promise<{
           votersCount: votersRows.length,
           totalStudents: STUDENTS_LIST.length,
         },
-        hasUserVoted: userRow.length > 0,
-        userVote: userRow.length > 0 ? userRow[0].candidate_id : null,
+        hasUserVoted,
+        userVote,
         votedStudents,
       };
     } catch (e) {

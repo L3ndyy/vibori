@@ -227,19 +227,30 @@ export default function Home() {
     return topCand ? topCand.shortName : undefined;
   }, [votes]);
 
-  // Filter candidates by search & toggle
+  // Filter candidates by search & toggle, and sort by votes descending (top votes first)
   const filteredCandidates = useMemo(() => {
-    let list = STUDENTS_LIST;
+    let list = [...STUDENTS_LIST];
     if (onlyWithVotes) {
       list = list.filter((c) => (votes[c.id] || 0) > 0);
     }
-    if (!searchQuery.trim()) return list;
-    const query = searchQuery.toLowerCase().trim();
-    return list.filter(
-      (c) =>
-        c.fullName.toLowerCase().includes(query) ||
-        c.shortName.toLowerCase().includes(query)
-    );
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim();
+      list = list.filter(
+        (c) =>
+          c.fullName.toLowerCase().includes(query) ||
+          c.shortName.toLowerCase().includes(query)
+      );
+    }
+
+    // Sort: whoever has more votes is higher up. If tied, keep original order.
+    return list.sort((a, b) => {
+      const votesA = votes[a.id] || 0;
+      const votesB = votes[b.id] || 0;
+      if (votesB !== votesA) {
+        return votesB - votesA;
+      }
+      return 0;
+    });
   }, [searchQuery, onlyWithVotes, votes]);
 
   const userVoteCandidate = STUDENTS_LIST.find((s) => s.id === userVoteCandidateId);

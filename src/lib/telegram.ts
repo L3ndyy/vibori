@@ -13,9 +13,9 @@ export interface TelegramAuthData {
 /**
  * Validates the authentication payload from Telegram Login Widget
  */
-export function verifyTelegramLogin(data: TelegramAuthData, botToken: string): boolean {
+export function verifyTelegramLogin(data: TelegramAuthData, rawBotToken: string): boolean {
+  const botToken = rawBotToken?.trim();
   if (!botToken) {
-    // If bot token is not configured (e.g. dev mode), allow if explicitly permitted
     return false;
   }
 
@@ -27,7 +27,7 @@ export function verifyTelegramLogin(data: TelegramAuthData, botToken: string): b
   const keys = Object.keys(rest).sort();
   for (const key of keys) {
     const val = (rest as Record<string, unknown>)[key];
-    if (val !== undefined && val !== null) {
+    if (val !== undefined && val !== null && val !== "") {
       checkArr.push(`${key}=${val}`);
     }
   }

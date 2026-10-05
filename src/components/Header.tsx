@@ -10,7 +10,6 @@ interface HeaderProps {
   isClosed: boolean;
   activeTab: "candidates" | "results";
   setActiveTab: (tab: "candidates" | "results") => void;
-  onOpenAdmin: () => void;
   leaderName?: string;
   isDark: boolean;
   onToggleTheme: () => void;
@@ -22,7 +21,6 @@ export const Header: React.FC<HeaderProps> = ({
   isClosed,
   activeTab,
   setActiveTab,
-  onOpenAdmin,
   leaderName,
   isDark,
   onToggleTheme,
@@ -75,7 +73,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
-          {/* Quick Actions (Theme toggle + Admin) */}
+          {/* Quick Actions (Theme toggle) */}
           <div className="flex items-center gap-2 self-start sm:self-auto">
             <button
               onClick={() => {
@@ -87,17 +85,6 @@ export const Header: React.FC<HeaderProps> = ({
               aria-label="Theme toggle"
             >
               {isDark ? <Sun className="h-4 w-4 text-amber-400" /> : <Moon className="h-4 w-4 text-slate-600" />}
-            </button>
-
-            <button
-              onClick={() => {
-                playClickSound();
-                onOpenAdmin();
-              }}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200/80 bg-white/80 px-3.5 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-800/80 dark:text-slate-200 dark:hover:bg-slate-700"
-            >
-              <ShieldCheck className="h-4 w-4 text-indigo-500" />
-              Админ
             </button>
           </div>
         </div>

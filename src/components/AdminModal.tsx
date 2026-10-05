@@ -179,7 +179,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({
                 Вход для организатора
               </h4>
               <p className="text-xs text-slate-500">
-                Введите пароль администратора (по умолчанию: <code className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">admin2026</code>)
+                Введите пароль администратора для доступа к аудиту и управлению
               </p>
 
               <input

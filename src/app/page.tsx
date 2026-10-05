@@ -253,7 +253,6 @@ export default function Home() {
         isClosed={isClosed}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        onOpenAdmin={() => setIsAdminOpen(true)}
         leaderName={leader}
         isDark={isDark}
         onToggleTheme={handleToggleTheme}

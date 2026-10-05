@@ -105,10 +105,23 @@ export async function getPollState(voterId?: string): Promise<{
     try {
       await ensureTable(sql);
 
+      const rawVoterId = voterId ? voterId.trim() : "";
+      const tgPrefixed = rawVoterId.startsWith("tg_") ? rawVoterId : `tg_${rawVoterId}`;
+      const numericId = rawVoterId.replace(/^tg_/, "");
+
       const [votersRows, settingsRows, userRow] = await Promise.all([
         sql`SELECT voter_id, username, first_name, student_name, candidate_id FROM votes_voters`,
         sql`SELECT key, value FROM votes_settings`,
-        voterId ? sql`SELECT candidate_id FROM votes_voters WHERE voter_id = ${voterId} LIMIT 1` : Promise.resolve([]),
+        rawVoterId
+          ? sql`
+              SELECT candidate_id FROM votes_voters 
+              WHERE voter_id = ${rawVoterId} 
+                 OR voter_id = ${tgPrefixed} 
+                 OR voter_id = ${numericId}
+                 OR username = ${rawVoterId.replace(/^@/, "")}
+              LIMIT 1
+            `
+          : Promise.resolve([]),
       ]);
 
       const votes: Record<string, number> = {};

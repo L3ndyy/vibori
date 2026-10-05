@@ -102,8 +102,13 @@ export default function Home() {
   // Fetch poll status
   const fetchPollStatus = async () => {
     try {
-      const voterParam = currentUser?.id ? `?voterId=${currentUser.id}` : "";
-      const res = await fetch(`/api/poll${voterParam}`);
+      const voterParam = currentUser?.id
+        ? `?voterId=${encodeURIComponent(currentUser.id)}&t=${Date.now()}`
+        : `?t=${Date.now()}`;
+      const res = await fetch(`/api/poll${voterParam}`, {
+        cache: "no-store",
+        headers: { "Pragma": "no-cache", "Cache-Control": "no-cache" },
+      });
       if (!res.ok) return;
       const data = await res.json();
       if (data.state) {

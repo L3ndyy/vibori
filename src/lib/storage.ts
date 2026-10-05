@@ -59,6 +59,7 @@ function getDatabaseClient() {
     process.env.POSTGRES_PRISMA_URL;
   if (rawUrl) {
     const cleanUrl = rawUrl.trim().replace(/^"|"$/g, "");
+    console.log(`[DB] Connected with URL prefix: ${cleanUrl.slice(0, 35)}... host: ${cleanUrl.split('@')[1]?.split('/')[0]}`);
     return neon(cleanUrl);
   }
   console.warn("⚠️ getDatabaseClient: NO DATABASE_URL found in environment! Available keys:", Object.keys(process.env).filter(k => k.includes("POSTGRES") || k.includes("DATABASE") || k.includes("NEON")));

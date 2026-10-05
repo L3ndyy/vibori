@@ -9,6 +9,7 @@ export async function GET(request: Request) {
     const voterId = searchParams.get("voterId") || undefined;
 
     const data = await getPollState(voterId);
+    console.log(`[API POLL] voterId=${voterId} returning votersCount=${data.state.votersCount} hasUserVoted=${data.hasUserVoted}`);
     return NextResponse.json(data, {
       headers: {
         "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
